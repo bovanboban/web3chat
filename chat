@@ -1,0 +1,74 @@
+use std::io::{self, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+
+#[derive(Clone)]
+struct ChatServer {
+    clients: Arc<Mutex<HashMap<String, TcpStream>>>,
+}
+
+impl ChatServer {
+    fn new() -> Self {
+        ChatServer {
+            clients: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn handle_client(&self, mut stream: TcpStream, username: String) {
+        let mut buffer = [0; 512];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(bytes_read) => {
+                    let message = String::from_utf8_lossy(&buffer[..bytes_read]);
+                    self.broadcast_message(&username, &message);
+                }
+                Err(e) => {
+                    eprintln!("Error reading from stream: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn broadcast_message(&self, username: &str, message: &str) {
+        let clients = self.clients.lock().unwrap();
+        for (name, stream) in clients.iter() {
+            if name != username {
+                let _ = stream.write(message.as_bytes());
+            }
+        }
+    }
+
+    fn add_client(&self, username: String, stream: TcpStream) {
+        let mut clients = self.clients.lock().unwrap();
+        clients.insert(username, stream);
+    }
+}
+
+fn main() -> io::Result<()> {
+    let server = ChatServer::new();
+    let listener = TcpListener::bind("127.0.0.1:8080")?;
+    println!("Server listening on port 8080");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let server = server.clone();
+                thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut buffer = [0; 128];
+                    stream.read(&mut buffer).unwrap();
+                    let username = String::from_utf8_lossy(&buffer).to_string();
+                    server.add_client(username.clone(), stream.try_clone().unwrap());
+                    server.handle_client(stream, username);
+                });
+            }
+            Err(e) => eprintln!("Connection failed: {}", e),
+        }
+    }
+
+    Ok(())
+}
